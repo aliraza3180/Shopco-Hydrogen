@@ -1,0 +1,2405 @@
+{% comment %}
+  Metaobject Gallery with Marker-Based Positioning
+  Usage: {% render 'lightbox-metaobject-gallery-marker' %}
+{% endcomment %}
+
+{% assign gallery_groups = metaobjects.gallery_group.values %}
+<script type="application/json" id="gallery-metaobjects-data">
+  [
+    {% if gallery_groups and gallery_groups.size > 0 %}
+      {% for gallery in gallery_groups %}
+        {
+          "id": "{{ gallery.gallery_id.value | default: gallery.gallery_id | default: gallery.system.handle | default: '' }}",
+          "name": "{{ gallery.gallery_name.value | default: gallery.gallery_name | default: 'Gallery' }}",
+          "images": [
+            {% if gallery.images.value %}
+              {% for image in gallery.images.value %}
+                {
+                  "url": "{{ image | image_url: width: 1920 }}",
+                  "thumbnail": "{{ image | image_url: width: 300 }}",
+                  "alt": "{{ image.alt | default: gallery.gallery_name.value | default: gallery.gallery_name | default: 'Gallery image' | escape }}"
+                }{% unless forloop.last %},{% endunless %}
+              {% endfor %}
+            {% elsif gallery.images %}
+              {% for image in gallery.images %}
+                {% if image.value %}
+                  {% assign img = image.value %}
+                {% else %}
+                  {% assign img = image %}
+                {% endif %}
+                {
+                  "url": "{{ img | image_url: width: 1920 }}",
+                  "thumbnail": "{{ img | image_url: width: 300 }}",
+                  "alt": "{{ img.alt | default: gallery.gallery_name.value | default: gallery.gallery_name | default: 'Gallery image' | escape }}"
+                }{% unless forloop.last %},{% endunless %}
+              {% endfor %}
+            {% endif %}
+          ]
+        }{% unless forloop.last %},{% endunless %}
+      {% endfor %}
+    {% endif %}
+  ]
+</script>
+
+{% javascript %}
+(function() {
+  'use strict';
+  
+  // Custom Lightbox Implementation
+  let isInitialized = false;
+  let isProcessing = false;
+  let currentLightbox = null;
+  
+  // Custom Lightbox Class
+  class CustomLightbox {
+    constructor() {
+      this.currentIndex = 0;
+      this.items = [];
+      this.isOpen = false;
+      this.isLoading = false;
+      this.touchStartX = 0;
+      this.touchEndX = 0;
+      this.init();
+    }
+    
+    init() {
+      // Create lightbox HTML structure
+      const lightboxHTML = `
+        <div class="custom-lightbox" id="custom-lightbox" role="dialog" aria-modal="true" aria-label="Image gallery">
+          <div class="lightbox-overlay"></div>
+          <div class="lightbox-container">
+            <button class="lightbox-close" aria-label="Close lightbox" type="button">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="lightbox-fullscreen" aria-label="Toggle fullscreen" type="button">
+              <svg class="fullscreen-enter" width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <svg class="fullscreen-exit" width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="lightbox-exit-fullscreen" aria-label="Exit fullscreen" type="button" style="display: none;">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="lightbox-prev" aria-label="Previous image" type="button">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M15 18L9 12L15 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="lightbox-next" aria-label="Next image" type="button">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9 18L15 12L9 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div class="lightbox-content">
+              <div class="lightbox-image-wrapper">
+                <img class="lightbox-image" src="" alt="" />
+                <div class="lightbox-loader"></div>
+              </div>
+              <div class="lightbox-info">
+                <div class="lightbox-counter"></div>
+                <div class="lightbox-title"></div>
+              </div>
+              <div class="lightbox-thumbnails">
+                <div class="lightbox-thumbnails-container"></div>
+                <button class="lightbox-thumbnails-prev" aria-label="Scroll thumbnails left" type="button">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M15 18L9 12L15 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                <button class="lightbox-thumbnails-next" aria-label="Scroll thumbnails right" type="button">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M9 18L15 12L9 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      
+      // Append to body if not exists
+      if (!document.getElementById('custom-lightbox')) {
+        if (document.body) {
+          document.body.insertAdjacentHTML('beforeend', lightboxHTML);
+        } else {
+          // Wait for body to be ready
+          document.addEventListener('DOMContentLoaded', () => {
+            document.body.insertAdjacentHTML('beforeend', lightboxHTML);
+            this.bindEvents();
+            this.cacheElements();
+          });
+          return;
+        }
+      }
+      
+      this.cacheElements();
+      this.bindEvents();
+      this.injectFullscreenStyles();
+    }
+    
+    injectFullscreenStyles() {
+      // Inject a style tag to ensure exit button shows in fullscreen
+      // This must be injected AFTER other styles to override them
+      if (!document.getElementById('lightbox-exit-fullscreen-styles')) {
+        const style = document.createElement('style');
+        style.id = 'lightbox-exit-fullscreen-styles';
+        style.textContent = `
+          /* Custom fullscreen mode - show exit button */
+          .custom-lightbox.custom-fullscreen .lightbox-exit-fullscreen {
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+          }
+          .lightbox-exit-fullscreen.show,
+          .lightbox-exit-fullscreen.in-fullscreen,
+          .lightbox-exit-fullscreen.show.in-fullscreen {
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+          }
+        `;
+        // Append to end of head to ensure it loads last
+        document.head.appendChild(style);
+      }
+    }
+    
+    cacheElements() {
+      this.lightbox = document.getElementById('custom-lightbox');
+      if (!this.lightbox) return;
+      
+      // Query all elements from the lightbox container for better performance
+      this.overlay = this.lightbox.querySelector('.lightbox-overlay');
+      this.container = this.lightbox.querySelector('.lightbox-container');
+      this.closeBtn = this.lightbox.querySelector('.lightbox-close');
+      this.prevBtn = this.lightbox.querySelector('.lightbox-prev');
+      this.nextBtn = this.lightbox.querySelector('.lightbox-next');
+      this.image = this.lightbox.querySelector('.lightbox-image');
+      this.imageWrapper = this.lightbox.querySelector('.lightbox-image-wrapper');
+      this.loader = this.lightbox.querySelector('.lightbox-loader');
+      this.counter = this.lightbox.querySelector('.lightbox-counter');
+      this.title = this.lightbox.querySelector('.lightbox-title');
+      this.thumbnailsContainer = this.lightbox.querySelector('.lightbox-thumbnails-container');
+      this.thumbnailsPrev = this.lightbox.querySelector('.lightbox-thumbnails-prev');
+      this.thumbnailsNext = this.lightbox.querySelector('.lightbox-thumbnails-next');
+      this.fullscreenBtn = this.lightbox.querySelector('.lightbox-fullscreen');
+      this.exitFullscreenBtn = this.lightbox.querySelector('.lightbox-exit-fullscreen');
+      this.isFullscreen = false;
+    }
+    
+    bindEvents() {
+      // Close button - use cached element
+      this.closeBtn?.addEventListener('click', () => this.close());
+      
+      // Navigation buttons - use cached elements
+      this.prevBtn?.addEventListener('click', () => this.prev());
+      this.nextBtn?.addEventListener('click', () => this.next());
+      
+      // Overlay click to close - use cached element
+      this.overlay?.addEventListener('click', () => this.close());
+      
+      // Keyboard navigation
+      document.addEventListener('keydown', (e) => {
+        if (!this.isOpen) return;
+        if (e.key === 'Escape') {
+          if (this.isFullscreen) {
+            e.preventDefault();
+            this.exitFullscreen();
+          } else {
+            this.close();
+          }
+        }
+        if (e.key === 'ArrowLeft') this.prev();
+        if (e.key === 'ArrowRight') this.next();
+        if (e.key === 'f' || e.key === 'F') {
+          if (this.isFullscreen) {
+            this.exitFullscreen();
+          } else {
+            this.enterFullscreen();
+          }
+        }
+      });
+      
+      // Fullscreen button - use cached element and arrow function to preserve 'this'
+      if (this.fullscreenBtn) {
+        this.fullscreenBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (this.isFullscreen) {
+            this.exitFullscreen();
+          } else {
+            this.enterFullscreen();
+          }
+        });
+      }
+      
+      // Exit fullscreen button - use cached element and arrow function to preserve 'this'
+      if (this.exitFullscreenBtn) {
+        this.exitFullscreenBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.exitFullscreen();
+        });
+      }
+      
+      // Touch/swipe support - use cached container
+      if (this.container) {
+        const content = this.container.querySelector('.lightbox-content');
+        if (content) {
+          content.addEventListener('touchstart', (e) => {
+            this.touchStartX = e.changedTouches[0].screenX;
+          });
+          
+          content.addEventListener('touchend', (e) => {
+            this.touchEndX = e.changedTouches[0].screenX;
+            this.handleSwipe();
+          });
+        }
+      }
+      
+      // Prevent container click from closing - use cached element
+      this.container?.addEventListener('click', (e) => {
+        e.stopPropagation();
+      });
+      
+      // Thumbnail navigation - use cached elements
+      if (this.thumbnailsPrev) {
+        this.thumbnailsPrev.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.scrollThumbnails('prev');
+        });
+      }
+      
+      if (this.thumbnailsNext) {
+        this.thumbnailsNext.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.scrollThumbnails('next');
+        });
+      }
+      
+      // Listen for scroll events on thumbnail container to update button visibility
+      if (this.thumbnailsContainer) {
+        this.thumbnailsContainer.addEventListener('scroll', () => {
+          this.updateThumbnailNavigation();
+        });
+      }
+    }
+    
+    scrollThumbnails(direction) {
+      if (!this.thumbnailsContainer) {
+        this.cacheElements();
+        if (!this.thumbnailsContainer) return;
+      }
+      
+      const scrollAmount = 250;
+      const currentScroll = this.thumbnailsContainer.scrollLeft;
+      const maxScroll = this.thumbnailsContainer.scrollWidth - this.thumbnailsContainer.clientWidth;
+      
+      let newScroll;
+      if (direction === 'next') {
+        newScroll = Math.min(currentScroll + scrollAmount, maxScroll);
+      } else {
+        newScroll = Math.max(currentScroll - scrollAmount, 0);
+      }
+      
+      // Safari-compatible smooth scroll
+      if (this.thumbnailsContainer.scrollTo) {
+        try {
+          this.thumbnailsContainer.scrollTo({
+            left: newScroll,
+            behavior: 'smooth'
+          });
+        } catch (e) {
+          // Fallback for browsers that don't support scrollTo with options
+          this.thumbnailsContainer.scrollLeft = newScroll;
+        }
+      } else {
+        this.thumbnailsContainer.scrollLeft = newScroll;
+      }
+      
+      // Update button visibility after scroll
+      setTimeout(() => {
+        this.updateThumbnailNavigation();
+      }, 300);
+    }
+    
+    handleSwipe() {
+      if (this.isLoading) return; // Prevent swipe during transition
+      
+      const swipeThreshold = 50;
+      const diff = this.touchStartX - this.touchEndX;
+      
+      if (Math.abs(diff) > swipeThreshold) {
+        if (diff > 0) {
+          this.next();
+        } else {
+          this.prev();
+        }
+      }
+    }
+    
+    open(items, startIndex = 0) {
+      if (!items || items.length === 0) return;
+      
+      // Ensure elements are cached
+      if (!this.lightbox || !this.loader || !this.image || !this.imageWrapper) {
+        this.cacheElements();
+      }
+      
+      // Reserve space for image wrapper to prevent layout shift
+      if (this.imageWrapper) {
+        this.imageWrapper.style.minHeight = '400px';
+        this.imageWrapper.style.minWidth = '400px';
+      }
+      
+      // Reset image state
+      if (this.image) {
+        this.image.src = '';
+        this.image.style.opacity = '0';
+        this.image.style.visibility = 'hidden';
+        this.image.style.width = 'auto';
+        this.image.style.height = 'auto';
+      }
+      
+      // Ensure loader is hidden initially (will be shown in loadImage)
+      if (this.loader) {
+        this.loader.classList.remove('showing');
+      }
+      
+      this.items = items;
+      this.currentIndex = startIndex;
+      this.isOpen = true;
+      
+      // Build thumbnails
+      this.buildThumbnails();
+      
+      // Show lightbox
+      this.lightbox.classList.add('active');
+      document.body.style.overflow = 'hidden';
+      
+      // Load first image (this will show loader)
+      this.loadImage(this.currentIndex);
+      
+      // Update navigation buttons
+      this.updateNavigation();
+      
+      // Update thumbnail navigation
+      setTimeout(() => {
+        this.updateThumbnailNavigation();
+      }, 100);
+    }
+    
+    buildThumbnails() {
+      if (!this.thumbnailsContainer || !this.items || this.items.length === 0) return;
+      
+      // Clear existing thumbnails
+      this.thumbnailsContainer.innerHTML = '';
+      
+      // Create thumbnail for each image
+      this.items.forEach((item, index) => {
+        const thumbnail = document.createElement('div');
+        thumbnail.className = 'lightbox-thumbnail';
+        if (index === this.currentIndex) {
+          thumbnail.classList.add('active');
+        }
+        
+        const thumbnailImg = document.createElement('img');
+        let thumbnailUrl = item.thumbnail || item.href || item.url || item;
+        if (thumbnailUrl && thumbnailUrl.startsWith('//')) {
+          thumbnailUrl = 'https:' + thumbnailUrl;
+        }
+        thumbnailImg.src = thumbnailUrl;
+        thumbnailImg.alt = item.title || item.alt || `Thumbnail ${index + 1}`;
+        thumbnailImg.loading = 'lazy';
+        
+        thumbnail.appendChild(thumbnailImg);
+        
+        // Click handler
+        thumbnail.addEventListener('click', () => {
+          this.loadImage(index);
+        });
+        
+        this.thumbnailsContainer.appendChild(thumbnail);
+      });
+    }
+    
+    loadImage(index) {
+      if (index < 0 || index >= this.items.length) return;
+      
+      const item = this.items[index];
+      const imageUrl = item.href || item.url || item;
+      const title = item.title || item.alt || '';
+      
+      // Fix protocol-relative URLs
+      let finalImageUrl = imageUrl;
+      if (imageUrl && imageUrl.startsWith('//')) {
+        finalImageUrl = 'https:' + imageUrl;
+      }
+      
+      // If there's a current image visible, fade it out first
+      const hasCurrentImage = this.image && this.image.src && this.image.style.opacity !== '0';
+      
+      if (hasCurrentImage) {
+        // Fade out current image smoothly
+        if (this.image) {
+          this.image.style.transition = 'opacity 0.1s ease';
+          this.image.style.opacity = '0';
+        }
+        
+        // Wait for fade-out to complete before loading new image
+        setTimeout(() => {
+          this.loadNewImage(index, finalImageUrl, title);
+        }, 100); // Match transition duration
+      } else {
+        // No current image, load immediately
+        this.loadNewImage(index, finalImageUrl, title);
+      }
+    }
+    
+    loadNewImage(index, finalImageUrl, title) {
+      // Show loader FIRST before doing anything else
+      if (this.loader) {
+        this.loader.classList.add('showing');
+      }
+      
+      // Hide current image
+      if (this.image) {
+        this.image.style.opacity = '0';
+        this.image.style.visibility = 'hidden';
+        // Keep dimensions to prevent layout shift
+        const currentWidth = this.image.offsetWidth || 400;
+        const currentHeight = this.image.offsetHeight || 400;
+        if (currentWidth > 0 && currentHeight > 0) {
+          this.image.style.width = currentWidth + 'px';
+          this.image.style.height = currentHeight + 'px';
+        }
+      }
+      
+      // Create new image object to preload
+      const img = new Image();
+      let imageLoaded = false;
+      
+      // Set up load handler
+      img.onload = () => {
+        if (imageLoaded) return; // Prevent double execution
+        imageLoaded = true;
+        
+        // Get natural dimensions for layout shift prevention
+        const naturalWidth = img.naturalWidth;
+        const naturalHeight = img.naturalHeight;
+        
+        // Calculate display dimensions maintaining aspect ratio
+        const maxWidth = Math.min(90 * window.innerWidth / 100, naturalWidth);
+        const maxHeight = Math.min((90 * window.innerHeight / 100) - 200, naturalHeight);
+        const aspectRatio = naturalWidth / naturalHeight;
+        
+        let displayWidth = maxWidth;
+        let displayHeight = maxWidth / aspectRatio;
+        
+        if (displayHeight > maxHeight) {
+          displayHeight = maxHeight;
+          displayWidth = maxHeight * aspectRatio;
+        }
+        
+        // Reserve space in wrapper to prevent layout shift
+        if (this.imageWrapper) {
+          this.imageWrapper.style.minWidth = displayWidth + 'px';
+          this.imageWrapper.style.minHeight = displayHeight + 'px';
+        }
+        
+        // Hide loader
+        if (this.loader) {
+          this.loader.classList.remove('showing');
+        }
+        
+        // Show image with smooth fade-in
+        if (this.image) {
+          // Reset dimensions to auto after reserving space
+          this.image.style.width = 'auto';
+          this.image.style.height = 'auto';
+          this.image.style.minWidth = '';
+          this.image.style.minHeight = '';
+          
+          this.image.src = finalImageUrl;
+          this.image.alt = title;
+          this.image.style.visibility = 'visible';
+          
+          // Use requestAnimationFrame to ensure smooth fade-in
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (this.image) {
+                this.image.style.transition = 'opacity 0.15s ease';
+                this.image.style.opacity = '1';
+              }
+            });
+          });
+        }
+      };
+      
+      // Set up error handler
+      img.onerror = () => {
+        if (imageLoaded) return; // Prevent double execution
+        imageLoaded = true;
+        
+        // Hide loader on error
+        if (this.loader) {
+          this.loader.classList.remove('showing');
+        }
+        
+        // Reset wrapper dimensions
+        if (this.imageWrapper) {
+          this.imageWrapper.style.minWidth = '400px';
+          this.imageWrapper.style.minHeight = '400px';
+        }
+        
+        // Show error state
+        if (this.image) {
+          this.image.style.width = 'auto';
+          this.image.style.height = 'auto';
+          this.image.style.opacity = '1';
+          this.image.style.visibility = 'visible';
+          this.image.alt = 'Failed to load image';
+        }
+        
+      };
+      
+      // Start loading - set src last so handlers are ready
+      img.src = finalImageUrl;
+      
+      // Check if image was already cached (loaded immediately)
+      if (img.complete && img.naturalWidth > 0) {
+        // Image was cached, but still show loader briefly for consistency
+        // Then trigger load handler
+        setTimeout(() => {
+          if (!imageLoaded) {
+            img.onload();
+          }
+        }, 50);
+      }
+      
+      // Update counter and title immediately
+      if (this.counter) {
+        this.counter.textContent = `${index + 1} / ${this.items.length}`;
+      }
+      if (this.title) {
+        this.title.textContent = title;
+      }
+      
+      this.currentIndex = index;
+      this.updateNavigation();
+      this.updateThumbnails();
+      
+      // Reset loading flag when image is fully loaded and visible (after fade-in completes)
+      setTimeout(() => {
+        this.isLoading = false;
+      }, 250); // Total time: 100ms fade-out + 150ms fade-in
+    }
+    
+    updateThumbnails() {
+      if (!this.thumbnailsContainer) return;
+      
+      const thumbnails = this.thumbnailsContainer.querySelectorAll('.lightbox-thumbnail');
+      thumbnails.forEach((thumb, index) => {
+        if (index === this.currentIndex) {
+          thumb.classList.add('active');
+          // Scroll thumbnail into view with padding to prevent overflow
+          const containerRect = this.thumbnailsContainer.getBoundingClientRect();
+          const thumbRect = thumb.getBoundingClientRect();
+          const scrollLeft = this.thumbnailsContainer.scrollLeft;
+          const thumbLeft = thumb.offsetLeft;
+          const thumbWidth = thumb.offsetWidth;
+          const containerWidth = this.thumbnailsContainer.offsetWidth;
+          const padding = 20; // Padding to prevent overflow
+          
+          // Calculate scroll position to center the thumbnail
+          const targetScroll = thumbLeft - (containerWidth / 2) + (thumbWidth / 2);
+          
+          // Safari-compatible smooth scroll
+          if (this.thumbnailsContainer.scrollTo) {
+            try {
+              this.thumbnailsContainer.scrollTo({
+                left: Math.max(0, targetScroll),
+                behavior: 'smooth'
+              });
+            } catch (e) {
+              this.thumbnailsContainer.scrollLeft = Math.max(0, targetScroll);
+            }
+          } else {
+            this.thumbnailsContainer.scrollLeft = Math.max(0, targetScroll);
+          }
+        } else {
+          thumb.classList.remove('active');
+        }
+      });
+      
+      // Update thumbnail navigation button visibility
+      this.updateThumbnailNavigation();
+    }
+    
+    updateThumbnailNavigation() {
+      if (!this.thumbnailsContainer || !this.thumbnailsPrev || !this.thumbnailsNext) return;
+      
+      const scrollLeft = this.thumbnailsContainer.scrollLeft;
+      const scrollWidth = this.thumbnailsContainer.scrollWidth;
+      const clientWidth = this.thumbnailsContainer.clientWidth;
+      const maxScroll = scrollWidth - clientWidth;
+      
+      // Hide prev button if at start
+      if (scrollLeft <= 5) {
+        this.thumbnailsPrev.classList.add('hidden');
+      } else {
+        this.thumbnailsPrev.classList.remove('hidden');
+      }
+      
+      // Hide next button if at end
+      if (scrollLeft >= maxScroll - 5) {
+        this.thumbnailsNext.classList.add('hidden');
+      } else {
+        this.thumbnailsNext.classList.remove('hidden');
+      }
+    }
+    
+    enterFullscreen() {
+      if (!this.lightbox) return;
+      
+      // Add custom fullscreen class
+      this.lightbox.classList.add('custom-fullscreen');
+      document.body.classList.add('lightbox-fullscreen-active');
+      
+      // Prevent body scroll
+      const scrollY = window.scrollY;
+      document.body.style.position = 'fixed';
+      document.body.style.top = `-${scrollY}px`;
+      document.body.style.width = '100%';
+      document.body.style.overflow = 'hidden';
+      
+      // Hide all UI elements (CSS will handle most, but ensure they're hidden)
+      if (this.prevBtn) {
+        this.prevBtn.style.display = 'none';
+        this.prevBtn.style.pointerEvents = 'none';
+      }
+      if (this.nextBtn) {
+        this.nextBtn.style.display = 'none';
+        this.nextBtn.style.pointerEvents = 'none';
+      }
+      if (this.closeBtn) {
+        this.closeBtn.style.display = 'none';
+        this.closeBtn.style.pointerEvents = 'none';
+      }
+      if (this.fullscreenBtn) {
+        this.fullscreenBtn.style.display = 'none';
+        this.fullscreenBtn.style.pointerEvents = 'none';
+      }
+      if (this.exitFullscreenBtn) {
+        this.exitFullscreenBtn.style.display = 'flex';
+        this.exitFullscreenBtn.style.visibility = 'visible';
+        this.exitFullscreenBtn.style.opacity = '0';
+        this.exitFullscreenBtn.style.pointerEvents = 'auto';
+      }
+      if (this.thumbnailsContainer) {
+        const thumbnailsWrapper = this.thumbnailsContainer.closest('.lightbox-thumbnails');
+        if (thumbnailsWrapper) {
+          thumbnailsWrapper.style.display = 'none';
+          thumbnailsWrapper.style.pointerEvents = 'none';
+        }
+      }
+      if (this.counter) {
+        const infoWrapper = this.counter.closest('.lightbox-info');
+        if (infoWrapper) {
+          infoWrapper.style.display = 'none';
+          infoWrapper.style.pointerEvents = 'none';
+        }
+      }
+      
+      this.isFullscreen = true;
+      this.updateFullscreenButton();
+    }
+    
+    exitFullscreen() {
+      if (!this.lightbox) return;
+      
+      // Remove custom fullscreen class
+      this.lightbox.classList.remove('custom-fullscreen');
+      document.body.classList.remove('lightbox-fullscreen-active');
+      
+      // Restore body scroll
+      const scrollY = document.body.style.top;
+      document.body.style.position = '';
+      document.body.style.top = '';
+      document.body.style.width = '';
+      document.body.style.overflow = '';
+      if (scrollY) {
+        const scrollValue = parseInt(scrollY.replace('px', '') || '0');
+        window.scrollTo(0, Math.abs(scrollValue));
+      }
+      
+      // Show all UI elements again
+      if (this.prevBtn) {
+        this.prevBtn.style.display = '';
+        this.prevBtn.style.pointerEvents = '';
+      }
+      if (this.nextBtn) {
+        this.nextBtn.style.display = '';
+        this.nextBtn.style.pointerEvents = '';
+      }
+      if (this.closeBtn) {
+        this.closeBtn.style.display = '';
+        this.closeBtn.style.pointerEvents = '';
+      }
+      if (this.fullscreenBtn) {
+        this.fullscreenBtn.style.display = '';
+        this.fullscreenBtn.style.pointerEvents = '';
+      }
+      // Hide exit button when not in fullscreen
+      if (this.exitFullscreenBtn) {
+        this.exitFullscreenBtn.style.display = 'none';
+        this.exitFullscreenBtn.style.visibility = 'hidden';
+        this.exitFullscreenBtn.style.opacity = '0';
+        this.exitFullscreenBtn.style.pointerEvents = 'none';
+      }
+      if (this.thumbnailsContainer) {
+        const thumbnailsWrapper = this.thumbnailsContainer.closest('.lightbox-thumbnails');
+        if (thumbnailsWrapper) {
+          thumbnailsWrapper.style.display = '';
+          thumbnailsWrapper.style.pointerEvents = '';
+        }
+      }
+      if (this.counter) {
+        const infoWrapper = this.counter.closest('.lightbox-info');
+        if (infoWrapper) {
+          infoWrapper.style.display = '';
+          infoWrapper.style.pointerEvents = '';
+        }
+      }
+      
+      this.isFullscreen = false;
+      this.updateFullscreenButton();
+    }
+    
+    updateFullscreenButton() {
+      if (!this.fullscreenBtn) return;
+      
+      const enterIcon = this.fullscreenBtn.querySelector('.fullscreen-enter');
+      const exitIcon = this.fullscreenBtn.querySelector('.fullscreen-exit');
+      
+      if (this.isFullscreen) {
+        if (enterIcon) enterIcon.style.display = 'none';
+        if (exitIcon) exitIcon.style.display = 'block';
+        // Show exit fullscreen button
+        if (this.exitFullscreenBtn) {
+          this.exitFullscreenBtn.classList.add('show');
+          this.exitFullscreenBtn.classList.add('in-fullscreen');
+          // Set inline styles (CSS with !important will override, but set these as fallback)
+          this.exitFullscreenBtn.style.display = 'flex';
+          this.exitFullscreenBtn.style.visibility = 'visible';
+          this.exitFullscreenBtn.style.opacity = '1';
+          this.exitFullscreenBtn.style.position = 'fixed';
+          this.exitFullscreenBtn.style.top = '20px';
+          this.exitFullscreenBtn.style.right = '20px';
+          this.exitFullscreenBtn.style.zIndex = '999999';
+          // Force a reflow to ensure styles are applied
+          this.exitFullscreenBtn.offsetHeight;
+        }
+      } else {
+        if (enterIcon) enterIcon.style.display = 'block';
+        if (exitIcon) exitIcon.style.display = 'none';
+        // Hide exit fullscreen button
+        if (this.exitFullscreenBtn) {
+          this.exitFullscreenBtn.classList.remove('show');
+          this.exitFullscreenBtn.classList.remove('in-fullscreen');
+          this.exitFullscreenBtn.style.display = 'none';
+        }
+      }
+    }
+    
+    updateNavigation() {
+      // Show/hide prev button
+      if (this.currentIndex === 0) {
+        this.prevBtn.classList.add('disabled');
+      } else {
+        this.prevBtn.classList.remove('disabled');
+      }
+      
+      // Show/hide next button
+      if (this.currentIndex === this.items.length - 1) {
+        this.nextBtn.classList.add('disabled');
+      } else {
+        this.nextBtn.classList.remove('disabled');
+      }
+    }
+    
+    next() {
+      if (this.currentIndex < this.items.length - 1 && !this.isLoading) {
+        this.isLoading = true;
+        this.loadImage(this.currentIndex + 1);
+      }
+    }
+    
+    prev() {
+      if (this.currentIndex > 0 && !this.isLoading) {
+        this.isLoading = true;
+        this.loadImage(this.currentIndex - 1);
+      }
+    }
+    
+    close() {
+      this.isOpen = false;
+      this.lightbox.classList.remove('active');
+      document.body.style.overflow = '';
+      
+      // Hide loader when closing
+      if (this.loader) {
+        this.loader.classList.remove('showing');
+      }
+      
+      // Reset image
+      if (this.image) {
+        this.image.src = '';
+        this.image.alt = '';
+        this.image.style.opacity = '0';
+        this.image.style.visibility = 'hidden';
+        this.image.style.width = 'auto';
+        this.image.style.height = 'auto';
+      }
+      
+      // Reset wrapper dimensions
+      if (this.imageWrapper) {
+        this.imageWrapper.style.minWidth = '';
+        this.imageWrapper.style.minHeight = '';
+      }
+      
+      // Clear thumbnails
+      if (this.thumbnailsContainer) {
+        this.thumbnailsContainer.innerHTML = '';
+      }
+      
+      // Exit fullscreen if active
+      if (this.isFullscreen) {
+        this.exitFullscreen();
+      }
+      
+      // Remove fullscreen class if still present
+      if (this.lightbox) {
+        this.lightbox.classList.remove('custom-fullscreen');
+      }
+      document.body.classList.remove('lightbox-fullscreen-active');
+      
+      this.items = [];
+      this.currentIndex = 0;
+      this.isFullscreen = false;
+    }
+  }
+  
+  // Initialize custom lightbox
+  const customLightbox = new CustomLightbox();
+  
+  // Wait for DOM to be ready
+  function initLightbox() {
+    // Check if already initialized
+    const container = document.querySelector('.article-template__content');
+    if (container && container.querySelector('.metaobject-gallery-container')) {
+      if (isInitialized) {
+        return;
+      }
+    }
+    
+    // Prevent multiple simultaneous initializations
+    if (isProcessing) {
+      return;
+    }
+    
+    isProcessing = true;
+    
+    // Wait a bit for content to be fully rendered
+    setTimeout(function() {
+      // Try multiple selectors to find article content
+      let container = document.querySelector('.article-template__content');
+      
+      if (!container) {
+        container = document.querySelector('.article-content, .article, article, main article, [class*="article"], [class*="blog"], .blog-post, .post-content, .entry-content, .content-area, .article-template');
+      }
+      
+      if (!container) {
+        container = document.body;
+      }
+      
+      if (!container) {
+        isProcessing = false;
+        return;
+      }
+      
+      // Check if already processed
+      if (container.querySelector('.metaobject-gallery-container')) {
+        isInitialized = true;
+        isProcessing = false;
+        return;
+      }
+      
+      // Get metaobject configuration
+      const configElement = document.getElementById('gallery-metaobjects-data');
+      let galleryMetaobjects = [];
+      
+      if (configElement && configElement.textContent) {
+        try {
+          const parsed = JSON.parse(configElement.textContent);
+          galleryMetaobjects = Array.isArray(parsed) ? parsed.filter(g => g && g.images && g.images.length > 0) : [];
+        } catch (e) {
+          // Error parsing gallery metaobjects
+        }
+      }
+      
+      if (galleryMetaobjects.length === 0) {
+        isProcessing = false;
+        return;
+      }
+      
+      // Process markers and render galleries
+      processMarkers(container, galleryMetaobjects);
+      
+      // Process any remaining images for single image lightbox
+      processSingleImages(container, galleryMetaobjects);
+      
+      isInitialized = true;
+      isProcessing = false;
+    }, 100);
+  }
+  
+  function processMarkers(container, metaobjects) {
+    // Check if markers have already been processed
+    if (container.querySelector('.metaobject-gallery-container')) {
+      return;
+    }
+    
+    // Create a map of galleries by ID
+    const galleryMap = new Map();
+    metaobjects.forEach(gallery => {
+      if (gallery.id) {
+        galleryMap.set(gallery.id.toLowerCase(), gallery);
+      }
+    });
+    
+    // Get container HTML and also check textContent for markers
+    const containerHTML = container.innerHTML;
+    const containerText = container.textContent || container.innerText || '';
+    
+    // Try multiple approaches to find markers
+    // Try various patterns in case of HTML encoding
+    const patterns = [
+      /\[gallery:([^\]]+)\]/gi,  // Standard format
+      /&#91;gallery:([^\]]+)&#93;/gi,  // HTML entity encoded
+      /&lsqb;gallery:([^\]]+)&rsqb;/gi,  // Named entities
+      /%5Bgallery:([^\]]+)%5D/gi  // URL encoded
+    ];
+    
+    let allMatches = [];
+    
+    // Try each pattern in HTML
+    patterns.forEach((pattern, patternIndex) => {
+      let match;
+      pattern.lastIndex = 0;
+      while ((match = pattern.exec(containerHTML)) !== null) {
+        allMatches.push({
+          fullMatch: match[0],
+          galleryId: match[1].toLowerCase().trim(),
+          index: match.index,
+          source: 'html',
+          pattern: patternIndex
+        });
+      }
+    });
+    
+    // Also try in text content
+    patterns.forEach((pattern, patternIndex) => {
+      let match;
+      pattern.lastIndex = 0;
+      while ((match = pattern.exec(containerText)) !== null) {
+        // Only add if not already found in HTML
+        const alreadyFound = allMatches.some(m => 
+          m.galleryId === match[1].toLowerCase().trim() && m.source === 'html'
+        );
+        if (!alreadyFound) {
+          allMatches.push({
+            fullMatch: match[0],
+            galleryId: match[1].toLowerCase().trim(),
+            index: match.index,
+            source: 'text',
+            pattern: patternIndex
+          });
+        }
+      }
+    });
+    
+    // Remove duplicates (same galleryId and similar position)
+    const uniqueMatches = [];
+    allMatches.forEach(match => {
+      const isDuplicate = uniqueMatches.some(existing => 
+        existing.galleryId === match.galleryId && 
+        Math.abs(existing.index - match.index) < 10
+      );
+      if (!isDuplicate) {
+        uniqueMatches.push(match);
+      }
+    });
+    allMatches = uniqueMatches;
+    
+    // If found in text but not HTML, search for the actual HTML element containing it
+    if (allMatches.length > 0 && allMatches.some(m => m.source === 'text')) {
+      const walker = document.createTreeWalker(
+        container,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+      );
+      
+      let textNode;
+      while (textNode = walker.nextNode()) {
+        if (textNode.textContent && textNode.textContent.includes('[gallery:')) {
+          // Update matches with actual HTML position
+          allMatches.forEach(m => {
+            if (m.source === 'text' && textNode.textContent.includes(m.fullMatch)) {
+              m.textNode = textNode;
+              m.parentElement = textNode.parentElement;
+            }
+          });
+        }
+      }
+    }
+    
+    if (allMatches.length === 0) {
+      
+      // Try a more aggressive search - look for the pattern in all text nodes
+      const walker = document.createTreeWalker(
+        container,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+      );
+      
+      let textNode;
+      const foundTextNodes = [];
+      while (textNode = walker.nextNode()) {
+        const text = textNode.textContent || '';
+        if (text.includes('[gallery:') || text.includes('gallery:')) {
+          foundTextNodes.push({
+            node: textNode,
+            text: text,
+            parent: textNode.parentElement
+          });
+        }
+      }
+      
+      // If we found text nodes with gallery, try to extract markers manually
+      if (foundTextNodes.length > 0) {
+        foundTextNodes.forEach(({ node, text, parent }) => {
+          const markerMatch = text.match(/\[gallery:([^\]]+)\]/i);
+          if (markerMatch) {
+            const galleryId = markerMatch[1].toLowerCase().trim();
+            const gallery = galleryMap.get(galleryId);
+            
+            if (gallery && gallery.images && gallery.images.length > 0) {
+              
+              // Replace the marker in the text node
+              const newText = text.replace(/\[gallery:[^\]]+\]/gi, '');
+              const galleryHTML = createGalleryHTML(gallery);
+              
+              // Insert gallery before the text node
+              const tempDiv = document.createElement('div');
+              tempDiv.innerHTML = galleryHTML;
+              const galleryElement = tempDiv.firstElementChild;
+              parent.insertBefore(galleryElement, node);
+              
+              // Update or remove text node
+              if (newText.trim()) {
+                node.textContent = newText;
+              } else {
+                parent.removeChild(node);
+              }
+              
+              // Initialize lightbox
+              initializeGalleryLightbox(galleryElement, gallery);
+            }
+          }
+        });
+        return; // We've processed the markers
+      }
+      
+      // Debug: search for any mention of gallery
+      return;
+    }
+    
+    // Build replacement map
+    let newHTML = container.innerHTML;
+    const galleriesToInit = [];
+    
+    // Process each marker (process in reverse to maintain string indices)
+    allMatches.reverse().forEach(matchData => {
+      const gallery = galleryMap.get(matchData.galleryId);
+      
+      if (gallery && gallery.images && gallery.images.length > 0) {
+        
+        // Create gallery HTML
+        const galleryHTML = createGalleryHTML(gallery);
+        
+        // If we have a text node reference, replace directly in the DOM
+        if (matchData.textNode && matchData.parentElement) {
+          const textNode = matchData.textNode;
+          const parent = matchData.parentElement;
+          const text = textNode.textContent;
+          const markerIndex = text.indexOf(matchData.fullMatch);
+          
+          if (markerIndex !== -1) {
+            // Split text and insert gallery
+            const textBefore = text.substring(0, markerIndex);
+            const textAfter = text.substring(markerIndex + matchData.fullMatch.length);
+            
+            // Create new nodes
+            if (textBefore) {
+              parent.insertBefore(document.createTextNode(textBefore), textNode);
+            }
+            
+            // Insert gallery
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = galleryHTML;
+            const galleryElement = tempDiv.firstElementChild;
+            parent.insertBefore(galleryElement, textNode);
+            
+            // Update or remove text node
+            if (textAfter) {
+              textNode.textContent = textAfter;
+            } else {
+              parent.removeChild(textNode);
+            }
+            
+            // Initialize lightbox
+            initializeGalleryLightbox(galleryElement, gallery);
+            galleriesToInit.push({ id: matchData.galleryId, gallery: gallery });
+            return;
+          }
+        }
+        
+        // Fallback: Replace in HTML string (escape special regex characters)
+        const escapedMatch = matchData.fullMatch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escapedMatch, 'g');
+        newHTML = newHTML.replace(regex, galleryHTML);
+        
+        // Store for initialization
+        galleriesToInit.push({ id: matchData.galleryId, gallery: gallery });
+      } else {
+        // Remove marker if gallery not found (escape special regex characters)
+        const escapedMatch = matchData.fullMatch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escapedMatch, 'g');
+        newHTML = newHTML.replace(regex, '');
+      }
+    });
+    
+    // Update container HTML once with all replacements (if we didn't use DOM manipulation)
+    if (newHTML !== container.innerHTML && allMatches.length > 0 && !allMatches[0].textNode) {
+      container.innerHTML = newHTML;
+      
+      // Initialize lightbox for all galleries
+      galleriesToInit.forEach(({ id, gallery }) => {
+        const galleryElements = container.querySelectorAll('.metaobject-gallery-container[data-gallery-id="' + escapeHtml(id) + '"]');
+        galleryElements.forEach(galleryElement => {
+          initializeGalleryLightbox(galleryElement, gallery);
+        });
+      });
+    } else if (allMatches.length > 0 && allMatches[0].textNode) {
+      // Initialize lightbox for DOM-inserted galleries
+      galleriesToInit.forEach(({ id, gallery }) => {
+        const galleryElements = container.querySelectorAll('.metaobject-gallery-container[data-gallery-id="' + escapeHtml(id) + '"]');
+        galleryElements.forEach(galleryElement => {
+          initializeGalleryLightbox(galleryElement, gallery);
+        });
+      });
+    }
+  }
+  
+  function createGalleryHTML(gallery) {
+    const galleryId = gallery.id || `gallery-${Date.now()}`;
+    const galleryName = gallery.name || 'Gallery';
+    
+    let html = `<div class="metaobject-gallery-container" data-gallery-id="${escapeHtml(galleryId)}">`;
+    html += `<div class="metaobject-gallery-grid">`;
+    
+    gallery.images.forEach((image, index) => {
+      let imageUrl = image.url || image;
+      let thumbnailUrl = image.thumbnail || imageUrl;
+      
+      // Fix protocol-relative URLs (//example.com -> https://example.com)
+      if (imageUrl && imageUrl.startsWith('//')) {
+        imageUrl = 'https:' + imageUrl;
+      }
+      if (thumbnailUrl && thumbnailUrl.startsWith('//')) {
+        thumbnailUrl = 'https:' + thumbnailUrl;
+      }
+      
+      const altText = image.alt || `${galleryName} - Image ${index + 1}`;
+      
+      html += `
+        <div class="gallery-item">
+          <a href="${escapeHtml(imageUrl)}" 
+             class="gallery-link" 
+             data-gallery-id="${escapeHtml(galleryId)}"
+             data-image-index="${index}"
+             data-title="${escapeHtml(altText)}">
+            <img src="${escapeHtml(thumbnailUrl)}" 
+                 alt="${escapeHtml(altText)}"
+                 loading="lazy"
+                 width="400"
+                 height="400"
+                 class="gallery-thumbnail">
+            <div class="gallery-overlay">
+              <span class="gallery-icon" aria-hidden="true">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="m21 21-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+            </div>
+          </a>
+        </div>
+      `;
+    });
+    
+    html += `</div></div>`;
+    
+    return html;
+  }
+  
+  function initializeGalleryLightbox(galleryElement, gallery) {
+    const links = galleryElement.querySelectorAll('a.gallery-link');
+    
+    links.forEach((link, index) => {
+      link.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Get all images in this gallery
+        const galleryId = link.getAttribute('data-gallery-id');
+        const galleryLinks = galleryElement.querySelectorAll('a.gallery-link[data-gallery-id="' + galleryId + '"]');
+        const linkArray = Array.from(galleryLinks);
+        const currentIndex = linkArray.indexOf(link);
+        
+        // Create items array for custom lightbox
+        const items = linkArray.map(l => {
+          let href = l.getAttribute('href');
+          // Fix protocol-relative URLs
+          if (href && href.startsWith('//')) {
+            href = 'https:' + href;
+          }
+          return {
+            href: href,
+            title: l.getAttribute('data-title') || '',
+            alt: l.querySelector('img')?.getAttribute('alt') || ''
+          };
+        });
+        
+        if (items.length > 0 && items[currentIndex]) {
+          // Open custom lightbox
+          customLightbox.open(items, currentIndex);
+        }
+        
+        return false;
+      });
+    });
+  }
+  
+  function processSingleImages(container, metaobjects) {
+    // Get all images that are not in metaobject galleries
+    const allImages = container.querySelectorAll('img:not(.gallery-thumbnail)');
+    const processedImages = new Set();
+    
+    // Mark images that are in galleries
+    metaobjects.forEach(gallery => {
+      if (gallery.images) {
+        gallery.images.forEach(imageData => {
+          const imageUrl = imageData.url || imageData;
+          allImages.forEach(img => {
+            const imgSrc = img.getAttribute('data-src-fg') || img.getAttribute('src') || img.getAttribute('data-src') || '';
+            if (normalizeImageUrl(imgSrc) === normalizeImageUrl(imageUrl)) {
+              processedImages.add(img);
+            }
+          });
+        });
+      }
+    });
+    
+    // Process remaining single images
+    allImages.forEach((img) => {
+      if (processedImages.has(img)) return;
+      
+      const src = img.getAttribute('data-src-fg') || img.getAttribute('src') || img.getAttribute('data-src') || '';
+      if (!src || src.includes('.svg') || img.width < 50 || img.height < 50) return;
+      
+      if (!isImageUrl(src)) return;
+      
+      const altText = img.getAttribute('alt') || '';
+      
+      // Check if image is already wrapped in a link
+      let link = img.closest('a');
+      
+      if (!link || link.getAttribute('href') === '#' || !isImageUrl(link.getAttribute('href'))) {
+        // Create new link wrapper
+        link = document.createElement('a');
+        link.href = src;
+        link.className = 'single-image-link';
+        
+        img.parentNode.insertBefore(link, img);
+        link.appendChild(img);
+      } else {
+        // Use existing link
+        link.href = src;
+        link.className = 'single-image-link';
+      }
+      
+      // Add click handler for single images
+      link.addEventListener('click', function(e) {
+        e.preventDefault();
+        
+        let imageUrl = src;
+        if (imageUrl && imageUrl.startsWith('//')) {
+          imageUrl = 'https:' + imageUrl;
+        }
+        
+        const items = [{
+          href: imageUrl,
+          title: altText || '',
+          alt: altText || ''
+        }];
+        
+        customLightbox.open(items, 0);
+      });
+    });
+  }
+  
+  function normalizeImageUrl(url) {
+    if (!url) return '';
+    // Remove query parameters, fragments, and normalize
+    return url.split('?')[0].split('#')[0].toLowerCase().trim();
+  }
+  
+  function isImageUrl(url) {
+    if (!url) return false;
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'];
+    return imageExtensions.some(ext => url.toLowerCase().includes(ext));
+  }
+  
+  function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+  }
+  
+  // Wait for the specific container to appear and have content
+  function waitForContent() {
+    // Don't retry if already initialized or processing
+    if (isInitialized || isProcessing) {
+      return true;
+    }
+    
+    const container = document.querySelector('.article-template__content');
+    
+    if (container) {
+      // Check if already processed
+      if (container.querySelector('.metaobject-gallery-container')) {
+        isInitialized = true;
+        return true;
+      }
+      
+      const html = container.innerHTML || '';
+      const text = container.textContent || '';
+      
+      // Check if container has actual article content (not just navigation)
+      const hasArticleContent = container.querySelector('h1, h2, h3, p, figure') !== null;
+      const hasMarker = html.includes('[gallery:') || text.includes('[gallery:');
+      
+      if (hasArticleContent && hasMarker) {
+        initLightbox();
+        return true;
+      } else if (hasArticleContent && !hasMarker) {
+        // Don't log this repeatedly
+        return false;
+      }
+    }
+    return false;
+  }
+  
+  // Initialize when DOM is ready
+  function startInit() {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() {
+        // Try immediately, then retry
+        if (!waitForContent()) {
+          setTimeout(function() {
+            if (!waitForContent()) {
+              setTimeout(initLightbox, 500);
+            }
+          }, 300);
+        }
+      });
+    } else {
+      // DOM already loaded
+      if (!waitForContent()) {
+        setTimeout(function() {
+          if (!waitForContent()) {
+            setTimeout(initLightbox, 500);
+          }
+        }, 300);
+      }
+    }
+  }
+  
+  // Start initialization
+  startInit();
+  
+  // Use MutationObserver to watch for content changes
+  if (typeof MutationObserver !== 'undefined') {
+    let observerTimeout;
+    const observer = new MutationObserver(function(mutations) {
+      // Don't process if already initialized or processing
+      if (isInitialized || isProcessing) {
+        return;
+      }
+      
+      const container = document.querySelector('.article-template__content');
+      if (container) {
+        // Check if already processed
+        if (container.querySelector('.metaobject-gallery-container')) {
+          isInitialized = true;
+          observer.disconnect();
+          return;
+        }
+        
+        const html = container.innerHTML || '';
+        const text = container.textContent || '';
+        if (html.includes('[gallery:') || text.includes('[gallery:')) {
+          // Debounce to avoid multiple rapid calls
+          clearTimeout(observerTimeout);
+          observerTimeout = setTimeout(function() {
+            if (!isInitialized && !isProcessing) {
+              initLightbox();
+            }
+          }, 200);
+        }
+      }
+    });
+    
+    // Start observing
+    if (document.body) {
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+      
+      // Disconnect after 5 seconds to avoid memory leaks
+      setTimeout(function() {
+        observer.disconnect();
+      }, 5000);
+    }
+  }
+  
+  // Single retry after delay
+  setTimeout(function() {
+    if (!isInitialized && !isProcessing) {
+      waitForContent();
+    }
+  }, 1500);
+})();
+{% endjavascript %}
+
+{% stylesheet %}
+/* Metaobject Gallery Container */
+.metaobject-gallery-container {
+  margin: 30px 0;
+  padding: 20px 0;
+}
+
+/* Gallery Grid */
+.metaobject-gallery-container .metaobject-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 15px;
+  width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .metaobject-gallery-container .metaobject-gallery-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .metaobject-gallery-container .metaobject-gallery-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .metaobject-gallery-container .metaobject-gallery-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+}
+
+/* Gallery Item - Scoped to gallery container only */
+.metaobject-gallery-container .gallery-item {
+  position: relative;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #f5f5f5;
+  cursor: pointer;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.metaobject-gallery-container .gallery-item:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+}
+
+.metaobject-gallery-container .gallery-link {
+  display: block;
+  width: 100%;
+  height: 100%;
+  text-decoration: none;
+  position: relative;
+}
+
+.metaobject-gallery-container .gallery-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.3s ease;
+}
+
+.metaobject-gallery-container .gallery-item:hover .gallery-thumbnail {
+  transform: scale(1.05);
+}
+
+/* Gallery Overlay - Scoped to gallery container only */
+.metaobject-gallery-container .gallery-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.3s ease;
+  pointer-events: none;
+}
+
+.metaobject-gallery-container .gallery-item:hover .gallery-overlay {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.metaobject-gallery-container .gallery-icon {
+  font-size: 2em;
+  color: #fff;
+  opacity: 0;
+  transform: scale(0.8);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.metaobject-gallery-container .gallery-item:hover .gallery-icon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Custom Lightbox Styles */
+/* Override theme's empty element hiding for all lightbox elements */
+.custom-lightbox:empty,
+.custom-lightbox div:empty,
+.custom-lightbox section:empty,
+.custom-lightbox article:empty,
+.custom-lightbox p:empty,
+.custom-lightbox h1:empty,
+.custom-lightbox h2:empty,
+.custom-lightbox h3:empty,
+.custom-lightbox h4:empty,
+.custom-lightbox h5:empty,
+.custom-lightbox h6:empty {
+  display: block !important;
+}
+
+.custom-lightbox {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9999;
+  opacity: 0;
+  visibility: hidden;
+  -webkit-transition: opacity 0.3s ease, visibility 0.3s ease;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+  display: block !important;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+.custom-lightbox.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Custom Fullscreen Mode */
+.custom-lightbox.custom-fullscreen {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  z-index: 999999 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.custom-lightbox.custom-fullscreen .lightbox-container {
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  padding: 0 !important;
+}
+
+.custom-lightbox.custom-fullscreen .lightbox-content {
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+}
+
+.custom-lightbox.custom-fullscreen .lightbox-image-wrapper {
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  width: 100vw !important;
+  height: 100vh !important;
+}
+
+.custom-lightbox.custom-fullscreen .lightbox-image {
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+}
+
+/* Hide all UI elements in fullscreen mode */
+.custom-lightbox.custom-fullscreen .lightbox-prev,
+.custom-lightbox.custom-fullscreen .lightbox-next,
+.custom-lightbox.custom-fullscreen .lightbox-close,
+.custom-lightbox.custom-fullscreen .lightbox-fullscreen,
+.custom-lightbox.custom-fullscreen .lightbox-thumbnails,
+.custom-lightbox.custom-fullscreen .lightbox-info,
+.custom-lightbox.custom-fullscreen .lightbox-counter,
+.custom-lightbox.custom-fullscreen .lightbox-title {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Show exit fullscreen button on hover in fullscreen mode */
+.custom-lightbox.custom-fullscreen .lightbox-exit-fullscreen {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 0 !important;
+  pointer-events: auto !important;
+  transition: opacity 0.3s ease !important;
+}
+
+.custom-lightbox.custom-fullscreen:hover .lightbox-exit-fullscreen {
+  opacity: 1 !important;
+}
+
+/* Show only the image in fullscreen */
+.custom-lightbox.custom-fullscreen .lightbox-content {
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.custom-lightbox.custom-fullscreen .lightbox-image-wrapper {
+  width: 100vw !important;
+  height: 100vh !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+body.lightbox-fullscreen-active {
+  overflow: hidden !important;
+  height: 100vh !important;
+  position: fixed !important;
+  width: 100% !important;
+}
+
+.lightbox-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.92);
+  cursor: pointer;
+  display: block !important;
+}
+
+.lightbox-overlay:empty {
+  display: block !important;
+}
+
+.lightbox-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.lightbox-container:empty {
+  display: flex !important;
+}
+
+.lightbox-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: -webkit-box !important;
+  display: -webkit-flex !important;
+  display: flex !important;
+  -webkit-box-orient: vertical;
+  -webkit-box-direction: normal;
+  -webkit-flex-direction: column;
+  flex-direction: column;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+}
+
+.lightbox-content:empty {
+  display: flex !important;
+}
+
+.lightbox-image-wrapper {
+  position: relative;
+  max-width: 90vw;
+  max-height: calc(90vh - 200px);
+  min-width: 400px;
+  min-height: 400px;
+  display: -webkit-box !important;
+  display: -webkit-flex !important;
+  display: flex !important;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  background: transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 0 auto;
+  -webkit-transition: min-width 0.2s ease, min-height 0.2s ease;
+  transition: min-width 0.2s ease, min-height 0.2s ease;
+}
+
+.lightbox-image-wrapper:empty {
+  display: flex !important;
+}
+
+.lightbox-image {
+  max-width: 90vw;
+  max-height: calc(90vh - 200px);
+  width: auto;
+  height: auto;
+  -o-object-fit: contain;
+  object-fit: contain;
+  display: block !important;
+  -webkit-transition: opacity 0.15s ease;
+  transition: opacity 0.15s ease;
+  margin: 0 auto;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  -webkit-perspective: 1000px;
+  perspective: 1000px;
+  will-change: opacity;
+  filter: none !important;
+}
+
+.lightbox-image:empty {
+  display: block !important;
+}
+
+.lightbox-loader {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  -webkit-transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  -webkit-animation: spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
+  display: none !important;
+  opacity: 0;
+  visibility: hidden;
+  -webkit-transition: opacity 0.2s ease, visibility 0.2s ease;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+  z-index: 1;
+}
+
+.lightbox-loader.showing {
+  display: block !important;
+  opacity: 1;
+  visibility: visible;
+}
+
+@-webkit-keyframes spin {
+  to { -webkit-transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+@keyframes spin {
+  to { -webkit-transform: translate(-50%, -50%) rotate(360deg); transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+.lightbox-info {
+  margin-top: 20px;
+  text-align: center;
+  color: #fff;
+  display: block !important;
+}
+
+.lightbox-info:empty {
+  display: block !important;
+}
+
+.lightbox-counter {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  margin-bottom: 8px;
+  display: block !important;
+}
+
+.lightbox-counter:empty {
+  display: block !important;
+}
+
+.lightbox-title {
+  font-size: 16px;
+  font-weight: 400;
+  color: #fff;
+  max-width: 600px;
+  display: none !important;
+}
+
+.custom-lightbox.active .lightbox-title:not(:empty) {
+  display: block !important;
+}
+
+.lightbox-title:empty {
+  display: none !important;
+}
+
+/* Navigation Buttons */
+.lightbox-prev,
+.lightbox-next {
+  position: absolute;
+  top: 50%;
+  -webkit-transform: translateY(-50%);
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.1);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: none;
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  display: -webkit-box;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  -webkit-transition: all 0.3s ease;
+  transition: all 0.3s ease;
+  z-index: 10;
+  padding: 0;
+}
+
+.lightbox-prev {
+  left: 20px;
+}
+
+.lightbox-next {
+  right: 20px;
+}
+
+.lightbox-prev:hover:not(.disabled),
+.lightbox-next:hover:not(.disabled) {
+  background: rgba(255, 255, 255, 0.2);
+  -webkit-transform: translateY(-50%) scale(1.1);
+  transform: translateY(-50%) scale(1.1);
+}
+
+.lightbox-prev.disabled,
+.lightbox-next.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.lightbox-prev svg,
+.lightbox-next svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Close Button */
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: rgba(255, 255, 255, 0.1);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: none;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: -webkit-box;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  -webkit-transition: all 0.3s ease;
+  transition: all 0.3s ease;
+  z-index: 10;
+  padding: 0;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+  -webkit-transform: scale(1.1);
+  transform: scale(1.1);
+}
+
+.lightbox-close svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Fullscreen Button */
+.lightbox-fullscreen {
+  position: absolute;
+  top: 20px;
+  right: 70px;
+  background: rgba(255, 255, 255, 0.1);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: none;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: -webkit-box;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  -webkit-transition: all 0.3s ease;
+  transition: all 0.3s ease;
+  z-index: 10;
+  padding: 0;
+}
+
+.lightbox-fullscreen:hover {
+  background: rgba(255, 255, 255, 0.2);
+  -webkit-transform: scale(1.1);
+  transform: scale(1.1);
+}
+
+.lightbox-fullscreen svg {
+  width: 20px;
+  height: 20px;
+}
+
+.lightbox-fullscreen .fullscreen-exit {
+  display: none;
+}
+
+/* Exit Fullscreen Button */
+.lightbox-exit-fullscreen {
+  position: fixed !important;
+  top: 20px !important;
+  right: 20px !important;
+  background: rgba(255, 255, 255, 0.15) !important;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 2px solid rgba(255, 255, 255, 0.3) !important;
+  border-radius: 50% !important;
+  width: 48px !important;
+  height: 48px !important;
+  display: none;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center !important;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center !important;
+  cursor: pointer !important;
+  color: #fff !important;
+  -webkit-transition: all 0.3s ease;
+  transition: all 0.3s ease;
+  z-index: 1000000 !important;
+  padding: 0 !important;
+  -webkit-box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* Show button when in custom fullscreen mode */
+.custom-lightbox.custom-fullscreen .lightbox-exit-fullscreen,
+.lightbox-exit-fullscreen.show,
+.lightbox-exit-fullscreen.in-fullscreen,
+.lightbox-exit-fullscreen.show.in-fullscreen {
+  display: -webkit-box !important;
+  display: -webkit-flex !important;
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Custom fullscreen mode - ensure exit button is always visible */
+.custom-lightbox.custom-fullscreen .lightbox-exit-fullscreen {
+  display: -webkit-box !important;
+  display: -webkit-flex !important;
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: fixed !important;
+  top: 20px !important;
+  right: 20px !important;
+  z-index: 1000000 !important;
+}
+
+.lightbox-exit-fullscreen:hover {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.5);
+  -webkit-transform: scale(1.1);
+  transform: scale(1.1);
+  -webkit-box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.lightbox-exit-fullscreen svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Thumbnails */
+.lightbox-thumbnails {
+  position: relative;
+  width: 100%;
+  max-width: 90vw;
+  margin-top: 20px;
+  padding: 0 40px;
+}
+
+.lightbox-thumbnails-container {
+  display: -webkit-box;
+  display: -webkit-flex;
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+  padding: 10px 20px;
+  scroll-padding: 20px;
+}
+
+.lightbox-thumbnails-container::-webkit-scrollbar {
+  height: 6px;
+}
+
+.lightbox-thumbnails-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.lightbox-thumbnails-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+}
+
+.lightbox-thumbnails-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.lightbox-thumbnail {
+  flex-shrink: 0;
+  width: 100px !important;
+  height: 100px !important;
+  min-width: 100px !important;
+  min-height: 100px !important;
+  max-width: 100px !important;
+  max-height: 100px !important;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.3s ease;
+  opacity: 0.6;
+  background: rgba(255, 255, 255, 0.1);
+  box-sizing: border-box;
+}
+
+.lightbox-thumbnail:hover {
+  opacity: 0.9;
+  -webkit-transform: scale(1.05);
+  transform: scale(1.05);
+}
+
+.lightbox-thumbnail.active {
+  border-color: #fff;
+  opacity: 1;
+  -webkit-transform: scale(1.05);
+  transform: scale(1.05);
+  -webkit-box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.3);
+}
+
+.lightbox-thumbnail img {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 100% !important;
+  min-height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: cover;
+  display: block;
+}
+
+.lightbox-thumbnails-prev,
+.lightbox-thumbnails-next {
+  position: absolute;
+  top: 50%;
+  -webkit-transform: translateY(-50%);
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.1);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: -webkit-box;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  -webkit-transition: all 0.3s ease;
+  transition: all 0.3s ease;
+  z-index: 10;
+  padding: 0;
+}
+
+.lightbox-thumbnails-prev.hidden,
+.lightbox-thumbnails-next.hidden {
+  display: none !important;
+}
+
+.lightbox-thumbnails-prev {
+  left: 0;
+}
+
+.lightbox-thumbnails-next {
+  right: 0;
+}
+
+.lightbox-thumbnails-prev:hover,
+.lightbox-thumbnails-next:hover {
+  background: rgba(255, 255, 255, 0.2);
+  -webkit-transform: translateY(-50%) scale(1.1);
+  transform: translateY(-50%) scale(1.1);
+}
+
+.lightbox-thumbnails-prev svg,
+.lightbox-thumbnails-next svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .lightbox-prev,
+  .lightbox-next {
+    width: 40px;
+    height: 40px;
+    top: 40%;
+  }
+  
+  .lightbox-prev {
+    left: 10px;
+  }
+  
+  .lightbox-next {
+    right: 10px;
+  }
+  
+  .lightbox-close {
+    top: 10px;
+    right: 10px;
+    width: 36px;
+    height: 36px;
+  }
+  
+  .lightbox-fullscreen {
+    top: 10px;
+    right: 55px;
+    width: 36px;
+    height: 36px;
+  }
+  
+  .lightbox-fullscreen svg {
+    width: 18px;
+    height: 18px;
+  }
+  
+  .lightbox-exit-fullscreen {
+    top: 10px;
+    right: 10px;
+    width: 42px;
+    height: 42px;
+  }
+  
+  .lightbox-exit-fullscreen svg {
+    width: 20px;
+    height: 20px;
+  }
+  
+  .lightbox-image {
+    max-height: calc(90vh - 80px);
+  }
+  
+  .lightbox-image-wrapper {
+    max-height: calc(90vh - 80px);
+    min-width: 300px;
+    min-height: 300px;
+  }
+  
+  .lightbox-thumbnails {
+    padding: 0 30px;
+    margin-top: 15px;
+  }
+  
+  .lightbox-thumbnail {
+    width: 100px !important;
+    height: 70px !important;
+    min-width: 70px !important;
+    min-height: 70px !important;
+    max-width: 100px !important;
+    max-height: 70px !important;
+  }
+  
+  .lightbox-thumbnail img {
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 100% !important;
+    min-height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+  }
+  
+  .lightbox-image-wrapper {
+    max-height: calc(90vh - 150px);
+  }
+  
+  .lightbox-image {
+    max-height: calc(90vh - 150px);
+  }
+  
+  .lightbox-thumbnails-prev,
+  .lightbox-thumbnails-next {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+/* Single images - make clickable (only images not in gallery containers) */
+.article-template__content img:not(.gallery-thumbnail):not(.lightbox-thumbnail img):not(.metaobject-gallery-container img),
+.article-content img:not(.gallery-thumbnail):not(.lightbox-thumbnail img):not(.metaobject-gallery-container img) {
+  cursor: pointer;
+  transition: opacity 0.3s ease;
+}
+
+.article-template__content img:not(.gallery-thumbnail):not(.lightbox-thumbnail img):not(.metaobject-gallery-container img):hover,
+.article-content img:not(.gallery-thumbnail):not(.lightbox-thumbnail img):not(.metaobject-gallery-container img):hover {
+  opacity: 0.9;
+}
+
+/* Loading state */
+.metaobject-gallery-container.loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Empty state */
+.metaobject-gallery-container:empty {
+  display: none;
+}
+{% endstylesheet %}
