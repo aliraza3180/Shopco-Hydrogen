@@ -1,0 +1,185 @@
+import {Await, Link} from 'react-router';
+import {Suspense, useId} from 'react';
+import type {
+  CartApiQueryFragment,
+  FooterQuery,
+  HeaderQuery,
+} from 'storefrontapi.generated';
+import {Aside} from '~/components/Aside';
+import {AnnouncementBar} from '~/components/AnnouncementBar';
+import {Footer} from '~/components/Footer';
+import {Header, HeaderMenu} from '~/components/Header';
+import {CartMain} from '~/components/CartMain';
+import {
+  SEARCH_ENDPOINT,
+  SearchFormPredictive,
+} from '~/components/SearchFormPredictive';
+import {SearchResultsPredictive} from '~/components/SearchResultsPredictive';
+
+interface PageLayoutProps {
+  cart: Promise<CartApiQueryFragment | null>;
+  footer: Promise<FooterQuery | null>;
+  header: HeaderQuery;
+  isLoggedIn: Promise<boolean>;
+  publicStoreDomain: string;
+  children?: React.ReactNode;
+}
+
+export function PageLayout({
+  cart,
+  children = null,
+  footer,
+  header,
+  isLoggedIn,
+  publicStoreDomain,
+}: PageLayoutProps) {
+  return (
+    <Aside.Provider>
+      <AnnouncementBar />
+      <CartAside cart={cart} />
+      <SearchAside />
+      <MobileMenuAside header={header} publicStoreDomain={publicStoreDomain} />
+      {header && (
+        <Header
+          header={header}
+          cart={cart}
+          isLoggedIn={isLoggedIn}
+          publicStoreDomain={publicStoreDomain}
+        />
+      )}
+      <main>{children}</main>
+      <Footer
+        footer={footer}
+        header={header}
+        publicStoreDomain={publicStoreDomain}
+      />
+    </Aside.Provider>
+  );
+}
+
+function CartAside({cart}: {cart: PageLayoutProps['cart']}) {
+  return (
+    <Aside type="cart" heading="CART">
+      <Suspense fallback={<p>Loading cart ...</p>}>
+        <Await resolve={cart}>
+          {(cart) => {
+            return <CartMain cart={cart} layout="aside" />;
+          }}
+        </Await>
+      </Suspense>
+    </Aside>
+  );
+}
+
+function SearchAside() {
+  const queriesDatalistId = useId();
+  return (
+    <Aside type="search" heading="SEARCH">
+      <div className="h-[calc(100vh-64px-40px)] overflow-y-auto">
+        <SearchFormPredictive className="bg-white sticky top-0 p-5 pb-4">
+          {({fetchResults, goToSearch, inputRef}) => (
+            <div className="flex gap-2">
+              <input
+                name="q"
+                onChange={fetchResults}
+                onFocus={fetchResults}
+                placeholder="Search for products..."
+                ref={inputRef}
+                type="search"
+                list={queriesDatalistId}
+                className="[&::-webkit-search-cancel-button]:cursor-pointer [&::-ms-clear]:cursor-pointer flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+              />
+              <button
+                onClick={goToSearch}
+                type="button"
+                className="px-6 py-3 bg-primary text-white rounded-lg hover:opacity-90 transition-opacity font-medium cursor-pointer"
+              >
+                Search
+              </button>
+            </div>
+          )}
+        </SearchFormPredictive>
+
+        <SearchResultsPredictive>
+          {({items, total, term, state, closeSearch}) => {
+            const {articles, collections, pages, products, queries} = items;
+
+            if (state === 'loading' && term.current) {
+              return (
+                <div className="p-5 text-center text-gray-500">Loading...</div>
+              );
+            }
+
+            if (!total) {
+              return (
+                <div className="p-5">
+                  <SearchResultsPredictive.Empty term={term} />
+                </div>
+              );
+            }
+
+            return (
+              <div className="p-5 pt-4">
+                <SearchResultsPredictive.Queries
+                  queries={queries}
+                  queriesDatalistId={queriesDatalistId}
+                />
+                <SearchResultsPredictive.Products
+                  products={products}
+                  closeSearch={closeSearch}
+                  term={term}
+                />
+                <SearchResultsPredictive.Collections
+                  collections={collections}
+                  closeSearch={closeSearch}
+                  term={term}
+                />
+                <SearchResultsPredictive.Pages
+                  pages={pages}
+                  closeSearch={closeSearch}
+                  term={term}
+                />
+                <SearchResultsPredictive.Articles
+                  articles={articles}
+                  closeSearch={closeSearch}
+                  term={term}
+                />
+                {term.current && total ? (
+                  <Link
+                    onClick={closeSearch}
+                    to={`${SEARCH_ENDPOINT}?q=${term.current}`}
+                    className="block mt-4 pt-4 border-t border-gray-200 text-center text-primary hover:underline cursor-pointer"
+                  >
+                    View all results for &quot;{term.current}&quot; →
+                  </Link>
+                ) : null}
+              </div>
+            );
+          }}
+        </SearchResultsPredictive>
+      </div>
+    </Aside>
+  );
+}
+
+function MobileMenuAside({
+  header,
+  publicStoreDomain,
+}: {
+  header: PageLayoutProps['header'];
+  publicStoreDomain: PageLayoutProps['publicStoreDomain'];
+}) {
+  return (
+    header.menu &&
+    header.shop.primaryDomain?.url && (
+      <Aside type="mobile" heading="MENU">
+        <HeaderMenu
+          menu={header.menu}
+          viewport="mobile"
+          primaryDomainUrl={header.shop.primaryDomain.url}
+          publicStoreDomain={publicStoreDomain}
+        />
+      </Aside>
+    )
+  );
+}
